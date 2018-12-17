@@ -148,6 +148,7 @@ def qr_jvp_rule(primals, tangents, full_matrices):
   domega = qt_dx_rinv_lower - _T(qt_dx_rinv_lower)  # This is skew-symmetric
   dq = np.matmul(q, domega - qt_dx_rinv) + dx_rinv
   dr = np.matmul(qt_dx_rinv - domega, r)
+
   return core.pack((q, r)), core.pack((dq, dr))
 
 qr_p = Primitive('qr')

@@ -123,7 +123,7 @@ class JaxprTrace(Trace):
     if const is None:
       return tracer
     else:
-      if type(const) in core.literalable_types and onp.shape(const) == ():
+      if type(const) in core.literalable_types:
         return self.new_instantiated_literal(const)
       else:
         return self.new_instantiated_const(const)

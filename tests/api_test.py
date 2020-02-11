@@ -1658,9 +1658,9 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(fun)(0.)
     self.assertMultiLineStrippedEqual("""
-{ lambda b ; a.
-  let 
-  in (a, 1.0, b) }
+{ lambda  ; a.
+    let
+  in (a, 1.0, [0.]) }
     """, str(jaxpr))
 
   def test_cond(self):
@@ -1672,18 +1672,18 @@ class JaxprTest(jtu.JaxTestCase):
                       lambda xf: xf - x)
     jaxpr = api.make_jaxpr(f)(3.)
     self.assertMultiLineStrippedEqual("""
-{ lambda  ; a.
-  let b = ge a 0.0
-      c = add a 1.0
-      d = add a 2.0
-      e = cond[ false_jaxpr={ lambda  ; b a.
-                              let c = sub a b
-                              in (c,) }
-                linear=(False, False, False, False)
-                true_jaxpr={ lambda  ; b a.
-                             let c = add a b
-                             in (c,) } ] b a c a d
-  in (e,) }
+    { lambda  ; a.
+      let b = ge a 0.0
+          c = add a 1.0
+          d = add a 2.0
+          e = cond[ false_jaxpr={ lambda  ; b a.
+                                  let c = sub a b
+                                  in (c,) }
+                    linear=(False, False, False, False)
+                    true_jaxpr={ lambda  ; b a.
+                                 let c = add a b
+                                 in (c,) } ] b a c a d
+      in (e,) }
         """, str(jaxpr))
 
   def testExamplesJaxprDoc(self):
@@ -1865,6 +1865,13 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(f, static_argnums=(1,))(2, 3)
     self.assertIn('3', str(jaxpr))
+
+  def test_pmap_constants_not_replicated(self):
+    x = jax.random.uniform(jax.random.PRNGKey(0), shape=(1000, 10))
+    f = jax.pmap(lambda i: x[i])
+    s = jax.xla_computation(f)(np.arange(10)).GetHloText()
+    self.assertIn('1000,10', s)
+    self.assertNotIn('1,1000,10', s)
 
 
 class LazyTest(jtu.JaxTestCase):

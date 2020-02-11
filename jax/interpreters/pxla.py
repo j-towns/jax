@@ -625,7 +625,7 @@ def parallel_callable(fun, backend, axis_name, axis_size, global_axis_size,
       dynamic_fun, [pval] + pvals, instantiate=False, stage_out=True, bottom=True)
   jaxpr.invars = jaxpr.invars[1:]  # ignore dummy
 
-  out_pvs, out_consts = unzip2(out_pvals)
+  out_pvs, _ = unzip2(out_pvals)
 
   # TODO(skye,mattjj): allow more collectives on multi-host as we test them, but
   # for now raise an error

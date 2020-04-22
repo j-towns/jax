@@ -26,7 +26,6 @@ from typing import Optional, Sequence, Union
 
 import numpy as onp
 
-from .config import flags, bool_env
 from . import lax
 from . import numpy as np
 from . import dtypes
@@ -42,6 +41,7 @@ from jax.interpreters import ad
 from jax.interpreters import batching
 from jax.interpreters import xla
 from jax.util import prod
+from .config import flags, bool_env
 
 FLAGS = flags.FLAGS
 flags.DEFINE_bool('jax_enable_prefix_prng',

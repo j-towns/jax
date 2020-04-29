@@ -12,51 +12,63 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from functools import partial
 import itertools as it
 from unittest import SkipTest
 
 import numpy as onp
 from absl.testing import absltest, parameterized
-from jax.interpreters.masking import shape_as_value, ShapeError, \
-  parse_spec, Poly, Mon
-from jax import numpy as np, test_util as jtu, mask, vmap, jit, grad, lax, \
-  shapecheck, api
+
+from jax.interpreters.masking import (shape_as_value, parse_spec, ShapeError,
+  Poly, Mon, eval_polymorphic_shape, remap_ids, UniqueIds)
+from jax import (numpy as np, test_util as jtu, mask, vmap, jit, grad, lax,
+  core as jc, shapecheck, safe_map, safe_zip, unzip2,
+  tree_flatten, tree_unflatten, tree_map)
 from jax.config import config
+from jax.lax.lax import _identity
 from jax.numpy.lax_numpy import _polymorphic_slice_indices
+from jax.random import uniform, PRNGKey
 from jax.scipy.special import expit
+from operator import add, sub
+import scipy.stats
 
 config.parse_flags_with_absl()
 
+map = safe_map
+zip = safe_zip
 
-# These are 'manual' tests for masking. The more exhaustive,
-# more systematic tests should live in lax_test.py.
+
+# TODO:
+# These should be only the 'manual' tests for masking.
+# Move the more exhaustive, systematic tests into lax_test.py.
 
 def constant_poly(c):
   return Poly({Mon(): c})
 
-class ShapesTest(jtu.JaxTestCase):
+class MaskingTest(jtu.JaxTestCase):
 
   @parameterized.parameters([
-      ['(m, n)', 'ShapeSpec(m, n)'],
-      ['(m * n)', 'ShapeSpec(m n)'],
-      ['m * n', 'ShapeSpec(m n)'],
-      ['(m * n,)', 'ShapeSpec(m n)'],
-      ['(3, m)', 'ShapeSpec(3, m)'],
-      ['(10, m)', 'ShapeSpec(10, m)'],
-      ['(-10, m)', 'ShapeSpec(-10, m)'],
-      ['(3 * m)', 'ShapeSpec(3 m)'],
-      ['m', 'ShapeSpec(m)'],
-      ['', 'ShapeSpec()'],
-      ['m + n', 'ShapeSpec(m + n)'],
-      ['m + n * k', 'ShapeSpec(m + k n)'],
-      ['m + 3 * k', 'ShapeSpec(3 k + m)'],
-      ['', 'ShapeSpec()'],
-      ['_', 'ShapeSpec(_)'],
+    ['(m, n)', 'ShapeSpec(m, n)'],
+    ['(m * n)', 'ShapeSpec(m n)'],
+    ['m * n', 'ShapeSpec(m n)'],
+    ['(m * n,)', 'ShapeSpec(m n)'],
+    ['(3, m)', 'ShapeSpec(3, m)'],
+    ['(10, m)', 'ShapeSpec(10, m)'],
+    ['(-10, m)', 'ShapeSpec(-10, m)'],
+    ['(3 * m)', 'ShapeSpec(3 m)'],
+    ['m', 'ShapeSpec(m)'],
+    ['', 'ShapeSpec()'],
+    ['n + -1*n', 'ShapeSpec(0)'],
+    ['m + n', 'ShapeSpec(m + n)'],
+    ['m + n * k', 'ShapeSpec(k n + m)'],
+    ['m + 3 * k', 'ShapeSpec(3 k + m)'],
+    ['-3 + k + k * k', 'ShapeSpec(k**2 + k + -3)'],
+    ['', 'ShapeSpec()'],
+    ['_', 'ShapeSpec(_)'],
   ])
   def test_parse_spec(self, spec, ans):
     self.assertEqual(str(parse_spec(spec)), ans)
+    self.assertEqual(str(remap_ids(UniqueIds(), parse_spec(spec))), ans)
 
   def test_Poly_equal(self):
     assert constant_poly(3) == 3
@@ -75,6 +87,10 @@ class ShapesTest(jtu.JaxTestCase):
   def test_Poly_hash(self):
     assert not len(set(hash(Poly({Mon(): i})) for i in range(10))) == 1
     assert hash(Poly({Mon(): 3, Mon({'n': 1}): 4})) == hash(Poly({Mon({'n': 1}): 4, Mon(): 3}))
+
+  def test_Mon_hash(self):
+    assert not len(set(hash(Mon({'a': i})) for i in range(10))) == 1
+    assert hash(Mon({'a': 1, 'b': 1})) == hash(Mon({'b': 1, 'a': 1}))
 
   def test_Poly_compare(self):
     poly = Poly({Mon(): 3, Mon({'n': 1}): 4})
@@ -100,205 +116,6 @@ class ShapesTest(jtu.JaxTestCase):
     n = Poly({Mon({'n': 1}): 1})
     assert -1 - n == -n - 1
 
-  def test_add_broadcast(self):
-    @shapecheck(['(m, n)', 'n'], '(m, n)')
-    @shapecheck(['n', ''], 'n')
-    def add(a, b):
-      return a + b
-
-  def test_sum(self):
-    @shapecheck(['(m, n)'], '')
-    def sum(x):
-      return np.sum(x)
-
-  def test_prod(self):
-    @shapecheck(['(m, n)'], '')
-    def prod(x):
-      return np.prod(x)
-
-  def test_max(self):
-    @shapecheck(['(m, n)'], '')
-    def prod(x):
-      return np.max(x)
-
-  def test_min(self):
-    @shapecheck(['(m, n)'], '')
-    def prod(x):
-      return np.min(x)
-
-  def test_dot(self):
-    @shapecheck(['(m, n)', 'n'], 'm')
-    def matvec(A, b):
-      return np.dot(A, b)
-
-    def thunk():
-      @shapecheck(['(m, n)', 'n'], 'm')
-      def matvec(A, b):
-        return lax.dot_general(A, b, [((0,), (0,)), ((), ())])
-    self.assertRaisesRegex(TypeError, "", thunk)
-
-  def test_flatten(self):
-    @shapecheck(['(m, n)'], 'm * n')
-    def flatten(x):
-      return lax.reshape(x, (x.shape[0] * x.shape[1],))
-
-  def test_concatenate(self):
-    @shapecheck(['m', 'n', 'm'], '3*m + n')
-    def cat(x, y, z):
-      return lax.concatenate([x, y, x, z], 0)
-
-    def thunk():
-      @shapecheck(['m', 'n', 'm'], '3*m + n')
-      def cat(x, y, z):
-        return lax.concatenate([x, y, x], 0)
-    self.assertRaisesRegex(ShapeError, "", thunk)
-
-  def test_device_put(self):
-    @shapecheck(['n'], 'n')
-    def d_put(x):
-      return api.device_put(x)
-
-  def test_broadcast_in_dim(self):
-    x = np.zeros(7)
-
-    @shapecheck(['(n,)'], '(3, n, 4)')
-    def broadcast_in_dim(x):
-      return lax.broadcast_in_dim(x, shape=(3, x.shape[0], 4), broadcast_dimensions=(1,))
-    x = np.zeros((7, 1))
-
-    @shapecheck(['(n, 1)'], '(3, n, 4, 1)')
-    def broadcast_in_dim(x):
-      return lax.broadcast_in_dim(x, shape=(3, x.shape[0], 4, x.shape[1]), broadcast_dimensions=(1, 3))
-
-  def test_jit(self):
-    @shapecheck(['n'], '2*n')
-    @jit
-    def concat(x):
-      return lax.concatenate([x, x], 0)
-
-    # TODO:
-    # @shapecheck(['n'], 'n')
-    # @jit
-    # @grad
-    # def sum_square(x):
-    #   return np.sum(x ** 2)
-
-  def test_pad(self):
-    @shapecheck(['n'], '2*n+1')
-    def p(x):
-      return lax.pad(x, np.array(0., x.dtype), [(1, 1, 1)])
-
-  def test_numpy_pad(self):
-    @shapecheck(['n'], 'n+1')
-    def p(x):
-      return np.pad(x, (0, 1))
-
-  @parameterized.named_parameters(jtu.cases_from_list(
-    {
-      'testcase_name': "strides={}_padding={}_lhs_dilation={}_dimension_numbers"
-                       "={}_lhs_perm={}_rhs_perm={}_out_perm={}".format(
-        strides, padding, lhs_dilation, dimension_numbers, lhs_perm, rhs_perm, out_perm),
-      'strides': strides, 'padding': padding, 'lhs_dilation': lhs_dilation,
-      'dimension_numbers': dimension_numbers, 'lhs_perm': lhs_perm,
-      'rhs_perm': rhs_perm, 'out_perm': out_perm}
-    for strides in [(1, 1), (2, 1)]
-    for padding in ['SAME', 'VALID', ((1, 0), (2, 0))]
-    for lhs_dilation in (None, (1, 2))
-    for dimension_numbers, (lhs_perm, rhs_perm, out_perm) in (
-            (("NCHW", "OIHW", "NCHW"), ((0, 1, 2, 3), (0, 1, 2, 3), (0, 1, 2, 3))),
-            (("NHWC", "HWIO", "NHWC"), ((0, 2, 3, 1), (2, 3, 1, 0), (0, 2, 3, 1))),
-            (("NCHW", "HWIO", "NHWC"), ((0, 1, 2, 3), (2, 3, 1, 0), (0, 2, 3, 1)))
-    )
-    # String padding is not implemented for transposed convolution, see conv_general_dilated implementation:
-    if (lhs_dilation is None or not isinstance(padding, str)) and
-    # only test strides with same padding:
-    (strides[0] == 1 or padding == 'SAME')))
-  def test_conv(self, strides, padding, lhs_dilation,
-                dimension_numbers, lhs_perm, rhs_perm, out_perm):
-    valid = padding == 'VALID'
-    is_strided = strides[0] != 1
-    lhs_shape = '({}, {}, {}, {})'.format(*onp.take(['n', 'i', '2*h' if is_strided else 'h', 'w'], lhs_perm))
-    rhs_shape = '({}, {}, {}, {})'.format(*onp.take(['o', 'i', '2', '3'], rhs_perm))
-    out_shape = '({}, {}, {}, {})'.format(*onp.take([
-      'n', 'o', 'h+-1' if valid and not is_strided else 'h',
-      ('w+-2' if valid else 'w') if lhs_dilation is None else '2*w+-1'], out_perm))
-
-    @shapecheck([lhs_shape, rhs_shape], out_shape)
-    def conv(lhs, rhs):
-      return lax.conv_general_dilated(
-        lhs, rhs, strides, padding,
-        lhs_dilation=lhs_dilation, dimension_numbers=dimension_numbers)
-
-  def test_indexing(self):
-    @shapecheck(['n'], '')
-    def first(x):
-      return x[0]
-
-    @shapecheck(['n'], '')
-    def last(x):
-      return x[-1]
-
-    @shapecheck(['(n,m,a)'], 'n,m')
-    @vmap
-    @shapecheck(['(n,a)'], 'n')
-    def last_column(x):
-      return x[..., -1]
-
-  def test_slicing(self):
-    @shapecheck(['n'], 'n+-1')
-    def slice(x):
-      return x[1:]
-
-    @shapecheck(['n'], 'n+-1')
-    def slice(x):
-      return x[:-1]
-
-    @shapecheck(['n'], 'n+-1')
-    def inverse(x):
-      return x[:0:-1]
-
-    @shapecheck(['n'], 'n+-1')
-    def inverse(x):
-      return x[-2::-1]
-
-  def test_poly_slicing(self):
-    @shapecheck(['n'], 'n+-1')
-    def slice_poly_stop(x):
-      return x[:x.shape[0] - 1]
-
-    # TODO: @shapecheck(['n'], '1')
-    def slice_poly_start(x):
-      return x[x.shape[0] - 1:]
-
-  def test_iota(self):
-    @shapecheck(['n'], 'n')
-    def range_like(x):
-      return lax.iota(np.int32, x.shape[0])
-
-  def test_arange(self):
-    @shapecheck(['n'], 'n')
-    def arange_like(x):
-      return np.arange(x.shape[0], dtype=np.int32)
-
-  def test_expit(self):
-    @shapecheck(['n'], 'n')
-    def expit_(x):
-      return expit(x)
-
-  def test_reshape(self):
-    @shapecheck(['n, a, b'], 'n, a*b')
-    def flatten(x):
-      return np.reshape(x, (x.shape[0], x.shape[1] * x.shape[2]))
-
-  def test_ravel(self):
-    a = np.array(1)
-
-    @shapecheck(['n'], '')
-    def thunk(n):
-      return -(a + n.ravel()[0] * 0)
-
-class MaskingTest(jtu.JaxTestCase):
-
   def test_sum(self):
     @partial(mask, in_shapes=['n'], out_shape='')
     def padded_sum(x):
@@ -321,10 +138,98 @@ class MaskingTest(jtu.JaxTestCase):
     expected = onp.array([0, 1, 2, 3, 4])
     self.assertAllClose(ans, expected, check_dtypes=False)
 
+  def check(self, fun, input_shapes, values_dict,
+            out_shape=None, unpadded_vars=None, custom_inputs=None,
+            skip_shapecheck=False, check_output_fun=None):
+    """Checks shapecheck and mask on the given function.
+    If value_dict entries contain multiple values, vmap(mask) is tested as well,
+    in addition to testing mask using the first element of each entry."""
+    if out_shape is not None and not skip_shapecheck:
+      shapecheck(input_shapes, out_shape)(fun)
+
+    masked_fun = mask(fun, input_shapes, out_shape)
+
+    input_shapes = map(parse_spec, input_shapes)
+
+    def padded_value(var):
+      is_unpadded = unpadded_vars is not None and var in unpadded_vars
+      padded_sizes = values_dict[var]
+      assert not is_unpadded or onp.all(padded_sizes == onp.max(padded_sizes))
+      return onp.max(padded_sizes) + (0 if is_unpadded else 2)
+
+    padded_values_dict = {var: padded_value(var) for var in values_dict.keys()}
+    padded_input_shapes = map(partial(eval_polymorphic_shape,
+                                      values_dict=padded_values_dict), input_shapes)
+    concrete_dims, tree = tree_flatten(
+      [eval_polymorphic_shape(shape, values_dict=values_dict)
+       for shape in input_shapes])
+    batched_concrete_input_shapes = tree_unflatten(tree, onp.broadcast_arrays(*concrete_dims))
+    batch_size = max(map(lambda x: 1 if len(x.shape) == 0 else x.shape[0], it.chain(*batched_concrete_input_shapes)))
+    is_vectorized = batch_size > 1
+    concrete_input_shapes_list = (
+      [[[dim[i] for dim in shape] for shape in batched_concrete_input_shapes] for i in range(batch_size)]
+      if is_vectorized else [batched_concrete_input_shapes])
+
+    def expected_outs_and_padded_inputs(concrete_input_shapes):
+      inputs = list(map(onp.random.random_sample, concrete_input_shapes))
+
+      if custom_inputs is not None:
+        for index, value in custom_inputs.items():
+          inputs[index] = value
+
+      pad_widths = map(sub, map(partial(onp.array, dtype=onp.int64), padded_input_shapes), concrete_input_shapes)
+      padded_inputs = [np.pad(input, tuple((0, w) for w in widths), constant_values=-1) if input.ndim > 0 else input
+                       for input, widths in zip(inputs, pad_widths)]
+
+      outs_ = fun(*inputs)
+      return outs_, padded_inputs
+
+    def check_padded_output(out_, padded_out):
+      out = padded_out[tuple(slice(None, k) for k in out_.shape)]
+
+      if check_output_fun:
+        check_output_fun(out_, out)
+      else:
+        self.assertAllClose(out_,  out, check_dtypes=True)
+
+    def check_outputs(outs_, padded_outs):
+      outs_flat_, tree_ = tree_flatten(outs_)
+      padded_outs_flat, tree = tree_flatten(padded_outs)
+      assert tree_ == tree
+
+      map(check_padded_output, outs_flat_, padded_outs_flat)
+
+    expected_outs_and_padded_ins = [
+      expected_outs_and_padded_inputs(concrete_input_shapes=concrete_input_shapes)
+      for concrete_input_shapes in concrete_input_shapes_list]
+
+    if is_vectorized:
+      expected_outs_list, padded_inputs_list = unzip2(expected_outs_and_padded_ins)
+
+      for maybe_jit in [jit, lambda fun: fun]:
+        v_masked_fun = maybe_jit(vmap(masked_fun))
+        input_count = len(padded_inputs_list[0])
+        padded_v_inputs = [onp.array([padded_inputs[i] for padded_inputs in padded_inputs_list]) for i in range(input_count)]
+        padded_v_outs = v_masked_fun(padded_v_inputs, values_dict)
+        padded_outs_list = [tree_map(lambda x: x[i], padded_v_outs) for i in range(batch_size)]
+        for outs_, padded_outs in zip(expected_outs_list, padded_outs_list):
+          check_outputs(outs_, padded_outs)
+
+    outs_, padded_inputs = expected_outs_and_padded_ins[0]
+    if is_vectorized:
+      values, tree = tree_flatten(values_dict)
+      values_dict = tree_unflatten(tree, [x[0] for x in onp.broadcast_arrays(*values)])
+    for maybe_jit in [jit, lambda fun: fun]:
+      padded_outs = maybe_jit(masked_fun)(padded_inputs, values_dict)
+      check_outputs(outs_, padded_outs)
+
+
   def test_add(self):
-    @partial(mask, in_shapes=['n', 'n'], out_shape='n')
-    def addvecs(x, y):
-      return x + y
+    self.check(add, ['(m, n)', 'n'], dict(m=np.array([2, 3]), n=np.array([4, 4])), '(m, n)', unpadded_vars=['n'])
+    self.check(add, ['n', ''], dict(n=np.array([2, 3])), 'n')
+    self.check(add, ['n', 'n'], dict(n=np.array([2, 3])), 'n')
+
+    addvecs = mask(add, in_shapes=['n', 'n'], out_shape='n')
 
     x = np.array([3, 1, 4, 1, 5, 9])
     y = np.array([2, 6, 5, 3, 5, 8])
@@ -381,35 +286,9 @@ class MaskingTest(jtu.JaxTestCase):
     expected = 5
     self.assertAllClose(ans, expected, check_dtypes=False)
 
-  def test_concatenate(self):
-    @partial(mask, in_shapes=['n', 'm', 'n'], out_shape='m + 2 * n')
-    def cat(x, y, z):
-      return lax.concatenate([x, y, z], 0)
-
-    ans = cat([np.array([1, 9]), np.array([2, 4, 9]), np.array([3, 9])],
-              dict(n=1, m=2))
-    expected = onp.array([1, 2, 4, 3])
-    self.assertAllClose(ans[:4], expected, check_dtypes=False)
-
-  def test_dot(self):
-    @partial(mask, in_shapes=['(m, k)', '(k, n)'], out_shape='(m, n)')
-    def dot(x, y):
-      return lax.dot(x, y)
-
-    x = onp.arange(6, dtype=onp.float32).reshape((2, 3))
-    y = onp.arange(12, dtype=onp.float32).reshape((3, 4))
-    ans = dot([x, y], dict(m=2, k=2, n=2))
-    expected = onp.dot(x[:2, :2], y[:2, :2])
-    self.assertAllClose(ans[:2, :2], expected, check_dtypes=False)
-
   def test_mean(self):
-    @partial(mask, in_shapes=['n'], out_shape='')
-    def padded_sum(x):
-      return np.sum(x) / shape_as_value(x.shape)[0]
-
-    ans = padded_sum([np.array([3, 1, 4, 1, 5])], dict(n=3))
-    expected = 8 / 3
-    self.assertAllClose(ans, expected, check_dtypes=False)
+    self.check(lambda x: np.sum(x) / shape_as_value(x.shape)[0], ['n'], dict(n=np.array([2, 3])), '',
+               skip_shapecheck=True)
 
   def test_monomorphic(self):
     @partial(mask, in_shapes=['(_, n)'], out_shape='')
@@ -518,8 +397,293 @@ class MaskingTest(jtu.JaxTestCase):
     expected = grad(lambda W: rnn_reference(W, seqs_, ys).sum())(W)
 
     self.assertAllClose(
-        ans, expected, check_dtypes=False,
-        rtol=2e-2 if jtu.device_under_test() == "tpu" else 1e-5)
+      ans, expected, check_dtypes=False,
+      rtol=2e-2 if jtu.device_under_test() == "tpu" else 1e-5)
+
+  def test_concatenate(self):
+    self.check(lambda x, y, z: lax.concatenate([x, y, z], 0),
+               ['n', 'm', 'n'], dict(n=np.array((1, 2)), m=np.array((2, 3))), 'm + 2 * n')
+
+  def test_dot(self):
+    self.check(lambda x, y: lax.dot(x, y),
+               ['(m, k)', '(k, n)'], dict(m=np.array([2, 3]), k=np.array([2, 3]), n=np.array([2, 3])), '(m, n)')
+    self.check(lambda A, b: np.dot(A, b), ['(m, n)', 'n'], dict(m=np.array([2, 3]), n=np.array([2, 3])), 'm')
+
+    def thunk():
+      self.check(lambda A, b: lax.dot_general(A, b, [((0,), (0,)), ((), ())]),
+                 ['(m, n)', 'n'], dict(m=2, n=2), 'm')
+    self.assertRaisesRegex(TypeError, "", thunk)
+
+  def test_jit(self):
+    @partial(mask, in_shapes=['n'], out_shape='2*n')
+    @jit
+    def duplicate(x):
+      assert python_should_be_executing
+      return lax.concatenate([x, x], 0)
+
+    python_should_be_executing = True
+    out = duplicate([np.arange(3)], dict(n=2))
+    assert onp.all(onp.array([0, 1, 0, 1]) == out[:4])
+
+    python_should_be_executing = False
+    out = duplicate([np.arange(3)], dict(n=2))
+    assert onp.all(onp.array([0, 1, 0, 1]) == out[:4])
+
+  def test_device_put(self):
+    self.check(lambda x: np.device_put(x), ['n'], dict(n=np.array([2, 3])), 'n')
+
+  @parameterized.named_parameters({
+                                    'testcase_name': "padding_config={}_shapes={}".format(
+                                      padding_config, shape),
+                                    'padding_config': padding_config,
+                                    'shape': shape}
+                                  for padding_config, shape in (
+                                          (((1, 2, 0),), (2,)),
+                                          (((1, 2, 0), (3, 4, 0)), (1, 2)),
+                                          (((0, 0, 0), (0, 0, 0)), (1, 2)),
+                                          (((1, 2, 3),), (2,)),
+                                          (((1, 2, 1), (3, 4, 2)), (3, 2)),
+                                          (((-1, 2, 0),), (2,)),
+                                          (((-1, -2, 0), (1, 2, 0)), (4, 2)),
+                                          (((-1, 2, 0), (1, 2, 2)), (4, 2)),
+                                          (((-1, -2, 2),), (5,)),
+                                          (((-1, -2, 1), (1, 2, 2)), (4, 2))))
+  def test_pad(self, padding_config, shape):
+    def pad(x):
+      return lax.pad(x, np.array(1., x.dtype), padding_config)
+
+    flat = len(shape) == 1
+    value_dict = dict(
+      [('h', np.array([shape[0], shape[0] + 1]))] +
+      ([] if flat else [('w', np.array([shape[1], shape[1] + 1]))]))
+    self.check(pad, ['h' if flat else '(h,w)'], value_dict)
+
+  def test_pad_check_out_shape(self):
+    self.check(lambda x: lax.pad(x, np.array(0., x.dtype), [(1, 1, 1)]),
+               ['n'], dict(n=np.array([2, 3])), '2*n+1')
+
+  def test_numpy_pad(self):
+    def numpy_pad(x):
+      return np.pad(x, (0, 1), constant_values=np.array(5., x.dtype))
+
+    self.check(numpy_pad, ['n'], dict(n=np.array([2, 3])), 'n+1')
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+    {
+      'testcase_name': "strides={}_padding={}_lhs_dilation={}_dimension_numbers"
+                       "={}_lhs_perm={}_rhs_perm={}_out_perm={}".format(
+        strides, padding, lhs_dilation, dimension_numbers, lhs_perm, rhs_perm, out_perm),
+      'strides': strides, 'padding': padding, 'lhs_dilation': lhs_dilation,
+      'dimension_numbers': dimension_numbers, 'lhs_perm': lhs_perm,
+      'rhs_perm': rhs_perm, 'out_perm': out_perm}
+    for strides in [(1, 1), (2, 1)]
+    for padding in ['SAME', 'VALID', ((0, 1), (2, 0))]
+    for lhs_dilation in (None, (1, 2))
+    for dimension_numbers, (lhs_perm, rhs_perm, out_perm) in (
+            (("NCHW", "OIHW", "NCHW"), ((0, 1, 2, 3), (0, 1, 2, 3), (0, 1, 2, 3))),
+            (("NHWC", "HWIO", "NHWC"), ((0, 2, 3, 1), (2, 3, 1, 0), (0, 2, 3, 1))),
+            (("NCHW", "HWIO", "NHWC"), ((0, 1, 2, 3), (2, 3, 1, 0), (0, 2, 3, 1)))
+    )
+    # String padding is not implemented for transposed convolution, see conv_general_dilated implementation:
+    if (lhs_dilation is None or not isinstance(padding, str)) and
+    # only test strides with same padding:
+    (strides[0] == 1 or padding == 'SAME')))
+  def test_conv(self, strides, padding, lhs_dilation,
+                dimension_numbers, lhs_perm, rhs_perm, out_perm):
+    valid = padding == 'VALID'
+    is_strided = strides[0] != 1
+    lhs_shape = '({}, {}, {}, {})'.format(*onp.take(['n', 'i', '2*h' if is_strided else 'h', 'w'], lhs_perm))
+    rhs_shape = '({}, {}, {}, {})'.format(*onp.take(['o', 'i', '2', '3'], rhs_perm))
+    out_shape = '({}, {}, {}, {})'.format(*onp.take([
+      'n', 'o', 'h+-1' if valid and not is_strided else 'h',
+      ('w+-2' if valid else 'w') if lhs_dilation is None else '2*w+-1'], out_perm))
+
+    def conv(lhs, rhs):
+      return lax.conv_general_dilated(
+        lhs, rhs, strides, padding,
+        lhs_dilation=lhs_dilation, dimension_numbers=dimension_numbers)
+
+    self.check(conv, [lhs_shape, rhs_shape], dict(n=np.array([1, 1]), i=np.array([3, 3]), o=np.array([2, 2]), h=np.array([1, 2]), w=np.array([2, 3])),
+               out_shape, unpadded_vars=['n', 'i', 'o'])
+
+  def test_indexing(self):
+    self.check(lambda x: x[0], ['n'], dict(n=np.array([2, 3])), '')
+    self.check(lambda x: x[-1], ['n'], dict(n=np.array([2, 3])), '')
+    self.check(lambda x: x[..., -1], ['(n,3)'], dict(n=np.array([2, 3])), 'n')
+
+  def test_slicing(self):
+    self.check(lambda x: x[1:], ['n'], dict(n=np.array([2, 3])), 'n+-1')
+    self.check(lambda x: x[:-1], ['n'], dict(n=np.array([2, 3])), 'n+-1')
+    self.check(lambda x: x[..., -1], ['(n,3)'], dict(n=np.array([2, 3])), 'n')
+    self.check(lambda x: x[:x.shape[0] - 1], ['n'], dict(n=np.array([2, 3])), 'n+-1')
+    # TODO: self.check(lambda x: x[x.shape[0] - 1:], ['n'], dict(n=np.array([2, 3])), '1')
+
+  def test_rev(self):
+    @shapecheck(['n'], 'n+-1')
+    def rev(x):
+      return x[:0:-1]
+
+    @shapecheck(['n'], 'n+-1')
+    def rev(x):
+      return x[-2::-1]
+
+    # TODO implement masking for rev_p:
+    # self.check(lambda x: x[:0:-1], ['n'], dict(n=np.array([2, 3])), 'n+-1')
+    # self.check(lambda x: x[-2::-1], ['n'], dict(n=np.array([2, 3])), 'n+-1')
+
+  def test_lax_slice(self):
+    self.check(lambda x: lax.slice(x, (1,), (x.shape[0],)), ['n'], dict(n=np.array([2, 3])), 'n+-1')
+    # TODO: self.check(lambda x: lax.slice(x, (x.shape[0] // 2,), (x.shape[0],)), ['2*n'], dict(n=np.array([2, 3])), 'n')
+
+  def test_reshape(self):
+    self.check(lambda x: np.reshape(x, (x.shape[0], x.shape[1] * x.shape[2])),
+               ['n, a, b'], dict(n=np.array([1, 2]), a=np.array([2, 2]), b=np.array([3, 3])), 'n, a*b',
+               unpadded_vars=['a', 'b'])
+
+    # Only check for shapes in case of reshaping padded dimensions.
+    # Needed for random number generation:
+    def check_shapes_match(out_, out):
+      self.assertEqual(out_.shape, out.shape)
+
+    self.check(lambda x: x.ravel(), ['(n,m)'], dict(n=np.array([2, 3]), m=np.array([2, 3])), 'n*m',
+               check_output_fun=check_shapes_match)
+    self.check(lambda x: np.reshape(x, (x.shape[0] * x.shape[1], x.shape[2])),
+               ['a, b, n'], dict(n=np.array([2, 3]), a=np.array([2, 3]), b=np.array([3, 2])), 'a*b, n',
+               check_output_fun=check_shapes_match)
+
+  def test_transpose(self):
+    self.check(lambda x: np.transpose(x, (1, 0, 2)),
+               ['(a, b, c)'], dict(a=np.array([2, 3]), b=np.array([2, 3]), c=np.array([3, 2])), 'b, a, c')
+
+  def test_arange(self):
+    self.check(lambda x: -np.arange(x.shape[0]), ['n'], dict(n=np.array([2, 3])), 'n')
+
+  def test_eye(self):
+    self.check(lambda x: -np.eye(x.shape[0], 2 * x.shape[0]), ['n'], dict(n=np.array([2, 3])), 'n, 2*n')
+
+  def test_tri(self):
+    self.check(lambda x: -np.tri(x.shape[0], 2 * x.shape[0]), ['n'], dict(n=np.array([2, 3])), 'n, 2*n')
+
+  def test_delta(self):
+    self.check(lambda x: -lax._delta(np.float32, (x.shape[0], 2 * x.shape[0], 3 * x.shape[0]), axes=(0, 1)), ['n'], dict(n=np.array([2, 3])), 'n, 2*n, 3*n')
+
+  def test_sum_2d(self):
+    self.check(lambda x: np.sum(x), ['(m, n)'], dict(m=np.array([2, 3]), n=np.array([2, 3])), '')
+
+  def test_expit(self):
+    raise SkipTest("custom_jvp doesn't work with masking yet")
+
+    self.check(lambda x: expit(x), ['n'], dict(n=np.array([2, 3])), 'n')
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+    {"testcase_name": "_{}".format(dtype), "dtype": onp.dtype(dtype).name}
+    for dtype in [onp.float32, onp.float64]))
+  def test_uniform(self, dtype):
+    raise SkipTest("not yet implemented")
+
+    # TODO remove, needs fix for https://github.com/google/jax/issues/2155
+    def check_uniform(expected_out, out):
+      assert expected_out.shape == out.shape
+      fail_prob = 0.01  # conservative bound on statistical fail prob by Kolmo CDF
+      self.assertGreater(scipy.stats.kstest(out, scipy.stats.uniform().cdf).pvalue, fail_prob)
+
+    def sample_like(x):
+      return uniform(PRNGKey(0), x.shape, dtype)
+
+    # TODO: how to allow input shape `n`?
+    #  random.threefry_2x32 handles even and odd sizes differently,
+    #  making general size `n` fail.
+    self.check(sample_like, ['2*n'], dict(n=np.array([10000, 2000])), '2*n',
+               check_output_fun=check_uniform)
+    self.check(sample_like, ['2*n+1'], dict(n=np.array([10000, 2000])), '2*n+1',
+               check_output_fun=check_uniform)
+    # TODO remove key.astype(...), allow to specify type in spec instead:
+    self.check(lambda key, x: uniform(key.astype(onp.uint64), x.shape, dtype),
+               ['2', '2*n'], dict(n=np.array((10000, 2000))), '2*n',
+               custom_inputs={0: PRNGKey(0)},
+               check_output_fun=check_uniform)
+
+  def test_zeros(self):
+    self.check(lambda x: -np.zeros(x.shape), ['n'], dict(n=np.array([2, 3])), 'n')
+
+  def test_ones(self):
+    self.check(lambda x: -np.ones(x.shape), ['n'], dict(n=np.array([2, 3])), 'n')
+
+  def test_broadcast_to(self):
+    self.check(lambda x: -np.broadcast_to(0, x.shape), ['n'], dict(n=np.array([2, 3])), 'n')
+
+  def test_broadcast_in_dim(self):
+    self.check(lambda x: -lax.broadcast_in_dim(np.zeros((1, 1)), shape=(3, x.shape[0], 4), broadcast_dimensions=(1, 2)),
+               ['(n, 1)'], dict(n=np.array([2, 3])), '(3, n, 4)')
+
+  def test_destructure(self):
+    def d(key):
+      key1, key2 = key
+      return key1
+
+    self.check(d, ['2'], dict(), '')
+
+  def test_where(self):
+    self.check(lambda x: np.where(x < 0, x, np.zeros_like(x)), ['n'], dict(n=np.array([2, 3])), 'n')
+
+    message = (
+      "mask(jit(broadcast_in_dim))) is not supported yet. "
+      "Consider using jit(mask(broadcast_in_dim)) instead."
+      "If you are using np.where, consider disabling jit on jax.lax._where or "
+      "manually broadcasting arguments to the same shape.")
+
+    self.assertRaisesWithLiteralMatch(NotImplementedError, message,
+                                      lambda: self.check(lambda x: np.where(x < 0, x, 0.), ['n'], dict(n=np.array([2, 3])), 'n'))
+    self.assertRaisesWithLiteralMatch(NotImplementedError, message,
+                                      lambda: self.check(lambda x: np.where(x < 0, 0., x), ['n'], dict(n=np.array([2, 3])), 'n'))
+    self.assertRaisesWithLiteralMatch(NotImplementedError, message,
+                                      lambda: self.check(lambda x: np.where(x < 0, 0., 0.), ['n'], dict(n=np.array([2, 3])), 'n'))
+
+  def test_split(self):
+    self.check(lambda x: np.split(x, 2), ['2*n'], dict(n=np.array([4, 4])), ['n', 'n'], unpadded_vars=['n'])
+    self.check(lambda x: np.split(x, [10]), ['n'], dict(n=np.array([12, 12])), ['10', 'n+-10'], unpadded_vars=['n'])
+
+  @parameterized.named_parameters(jtu.cases_from_list([{
+    'testcase_name': "operator={}".format(operator.__name__), 'operator': operator}
+    for operator in [np.sum, np.prod, np.max, np.min]]))
+  def test_reduce(self, operator):
+    self.check(operator, ['(m, n)'], dict(m=np.array([3, 3]), n=np.array([3, 3])), '', unpadded_vars=['m', 'n'])
+
+  def test_output_shape_error(self):
+    def thunk(skip_shapecheck=False):
+      self.check(lambda x: x, ['n'], dict(n=np.array([3, 3])), 'n+-1')
+
+    message = "Output shapes should be (n + -1,) but are (n,)."
+    self.assertRaisesWithLiteralMatch(ShapeError, message, thunk)
+    self.assertRaisesWithLiteralMatch(ShapeError, message, partial(thunk, skip_shapecheck=True))
+
+    def thunk(skip_shapecheck=False):
+      self.check(lambda x: np.split(x, 2),
+                 ['2*n'], dict(n=np.array([2, 2])), ['7*n', 'n'], unpadded_vars=['n'],
+                 skip_shapecheck=skip_shapecheck)
+
+    message = "Output shapes should be [(7 n,), (n,)] but are [(n,), (n,)]."
+    self.assertRaisesWithLiteralMatch(ShapeError, message, thunk)
+    self.assertRaisesWithLiteralMatch(ShapeError, message, partial(thunk, skip_shapecheck=True))
+
+  def test_output_tree_error(self):
+    def thunk(skip_shapecheck=False):
+      self.check(lambda x: np.split(x, 2), ['2*n'], dict(n=np.array([3, 3])), ('n', 'n'), unpadded_vars=['n'],
+                 skip_shapecheck=skip_shapecheck)
+    message = "Output shapes should be ((n,), (n,)) but are [(n,), (n,)]."
+    self.assertRaisesWithLiteralMatch(ShapeError, message, thunk)
+    self.assertRaisesWithLiteralMatch(ShapeError, message, partial(thunk, skip_shapecheck=True))
+
+  def test_unsupported_op(self):
+    p = jc.Primitive('unsupported_op')
+    p.def_abstract_eval(_identity)
+    p.def_impl(lambda x: x)
+
+    def thunk():
+      self.check(lambda x: p.bind(x), ['n'], dict(n=np.array([2, 3])), 'n')
+
+    message = "Masking rule for unsupported_op not implemented yet."
+    self.assertRaisesWithLiteralMatch(NotImplementedError, message, thunk)
 
   def test_nesting(self):
     raise SkipTest("not yet implemented")
@@ -542,16 +706,6 @@ class MaskingTest(jtu.JaxTestCase):
     expected = 3+1 + 5+9+2
     self.assertAllClose(ans, expected, check_dtypes=False)
 
-  def test_arange(self):
-    raise SkipTest("not yet implemented")
-
-    @partial(mask, in_shapes=['n'], out_shape='n')
-    def padded_add(x):
-      return x + lax.iota(x.shape[0])
-
-    ans = padded_add([np.array([3, 1, 4, 1, 5])], dict(n=3))
-    expected = onp.array([3, 2, 6])
-    self.assertAllClose(ans[:3], expected, check_dtypes=False)
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {"testcase_name": "_start={}_stop={}_step={}_length={}"

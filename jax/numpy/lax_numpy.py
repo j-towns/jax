@@ -46,6 +46,7 @@ from ..abstract_arrays import UnshapedArray, ShapedArray, ConcreteArray, canonic
 from ..config import flags
 from ..interpreters.xla import DeviceArray
 from ..interpreters.masking import Poly
+from ..interpreters import masking
 from .. import lax
 from .. import ops
 from ..util import partial, get_module_functions, unzip2, prod as _prod, subvals
@@ -1314,7 +1315,6 @@ def broadcast_to(arr, shape):
 
 @_wraps(onp.split)
 def split(ary, indices_or_sections, axis=0):
-  dummy_val = onp.broadcast_to(0, ary.shape)  # zero strides
   if isinstance(indices_or_sections, (tuple, list) + _arraylike_types):
     indices_or_sections = [core.concrete_or_error(int, i_s, "in jax.numpy.split argument 1")
                            for i_s in indices_or_sections]
@@ -1322,9 +1322,17 @@ def split(ary, indices_or_sections, axis=0):
     indices_or_sections = core.concrete_or_error(int, indices_or_sections,
                                                  "in jax.numpy.split argument 1")
   axis = core.concrete_or_error(int, axis, "in jax.numpy.split argument `axis`")
+  size = ary.shape[axis]
+  if type(indices_or_sections) in {int, Poly}:
+    part_size, r = _divmod(size, indices_or_sections)
 
-  subarrays = onp.split(dummy_val, indices_or_sections, axis)  # shapes
-  split_indices = onp.cumsum([0] + [onp.shape(sub)[axis] for sub in subarrays])
+    if r != 0:
+      raise ValueError(f'Number of sections {indices_or_sections} does not '
+                       f'divide axis size {size}.')
+
+    split_indices = onp.arange(indices_or_sections + 1) * part_size
+  else:
+    split_indices = onp.concatenate([[0], indices_or_sections, [size]])
   starts, ends = [0] * ndim(ary), shape(ary)
   _subval = lambda x, i, v: subvals(x, [(i, v)])
   return [lax.slice(ary, _subval(starts, axis, start), _subval(ends, axis, end))
@@ -2140,7 +2148,7 @@ def identity(n, dtype=None):
 def arange(start, stop=None, step=None, dtype=None):
   lax._check_user_dtype_supported(dtype, "arange")
   if stop is None and step is None:
-    dtype = dtype or _dtype(start)
+    dtype = dtype or (int64 if type(start) is Poly else _dtype(start))
     return lax.iota(dtype, start) # avoids materializing
   else:
     return array(onp.arange(start, stop=stop, step=step, dtype=dtype))
@@ -3382,7 +3390,9 @@ def _index_to_gather(x_shape, idx):
         # XLA gives error when indexing into an axis of size 0
         raise IndexError(f"index is out of bounds for axis {x_axis} with size 0")
       i = _normalize_index(i, x_shape[x_axis])
-      if type(i) is Poly:
+      if masking.is_tracing():
+        i = masking.poly_as_value(i)
+      elif type(i) is Poly:
         # dummy index if i is polynomial, doesn't matter for shape inference
         # TODO(mattjj,j-towns,juliuskunze): revise this logic
         i = 0

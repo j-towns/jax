@@ -2743,7 +2743,7 @@ def _broadcast_in_dim_shape_rule(operand, *, shape, broadcast_dimensions):
     msg = ('broadcast_in_dim broadcast_dimensions must be a subset of output '
            'dimensions, got {} for operand ndim {} and shape {}.')
     raise TypeError(msg.format(broadcast_dimensions, operand_ndim, shape))
-  o_shape = masking.padded_shape_as_value_if_tracing(operand.shape)
+  o_shape = masking.padded_shape_as_value_if_tracing(onp.shape(operand))
   if any(o_shape[i] != 1 and o_shape[i] !=
          masking.padded_shape_as_value_if_tracing(shape)[broadcast_dimensions[i]]
          for i in range(operand_ndim)):

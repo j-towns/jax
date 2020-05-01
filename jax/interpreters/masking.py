@@ -18,7 +18,7 @@ from functools import partial
 from itertools import chain, product
 import operator as op
 import string
-from typing import Callable, Dict, Set, Type, Tuple
+from typing import Callable, Dict, Set, Type, Sequence, Union
 
 import numpy as onp
 
@@ -117,7 +117,7 @@ def _ensure_poly(p):
 
   return Poly({Mon(): p})
 
-def is_polymorphic(shape: Tuple):
+def is_polymorphic(shape: Sequence[Union[int, 'Poly']]):
   return any(map(lambda d: type(d) is Poly, shape))
 
 class Poly(dict):

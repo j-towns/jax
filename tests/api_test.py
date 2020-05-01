@@ -1712,10 +1712,10 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(func6)(jnp.ones(8))
     self.assertMultiLineStrippedEqual("""
-{ lambda b d ; a.
-  let c = add a b
-      e = sub c d
-  in (e,) }
+{ lambda  ; a.
+  let b = add a [2.524413 2.524413 2.524413 2.524413 2.524413 2.524413 2.524413 2.524413]
+      c = sub b [1. 1. 1. 1. 1. 1. 1. 1.]
+  in (c,) }
             """, str(jaxpr))
 
     def func7(arg):
@@ -1748,16 +1748,16 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(func8)(5., (jnp.zeros(1), 2.))
     self.assertMultiLineStrippedEqual("""
-{ lambda e ; a b c.
+{ lambda  ; a b c.
   let d = ge a 0.0
-      f = cond[ false_jaxpr={ lambda  ; c a b.
-                              let d = add c b
-                              in (d,) }
-                linear=(False, False, False, False, False)
+      e = cond[ false_jaxpr={ lambda  ; a b.
+                              let c = add [1.] b
+                              in (c,) }
+                linear=(False, False, False, False)
                 true_jaxpr={ lambda  ; a b.
-                             let 
-                             in (a,) } ] d b c e b c
-  in (f,) }
+                             let
+                             in (a,) } ] d b c b c
+  in (e,) }
                     """, str(jaxpr))
 
     def func10(arg, n):
@@ -1768,19 +1768,19 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(func10)(onp.ones(16), 5)
     self.assertMultiLineStrippedEqual("""
-{ lambda c d ; a b.
-  let e = add a d
-      f g h = while[ body_jaxpr={ lambda  ; e g a b c.
+{ lambda  ; a b.
+  let c = add a [1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]
+      d e f = while[ body_jaxpr={ lambda  ; f a b c.
                                   let d = add a 1
-                                      f = add c e
-                                      h = add f g
-                                  in (d, b, h) }
-                     body_nconsts=2
+                                      e = add c [3. 3. 3. 3. 3. 3. 3. 3. 3. 3. 3. 3. 3. 3. 3. 3.]
+                                      g = add e f
+                                  in (d, b, g) }
+                     body_nconsts=1
                      cond_jaxpr={ lambda  ; a b c.
                                   let d = lt a b
                                   in (d,) }
-                     cond_nconsts=0 ] c a 0 b e
-  in (h,) }
+                     cond_nconsts=0 ] a 0 b c
+  in (f,) }
       """, str(jaxpr))
 
     def func11(arr, extra):
@@ -1797,8 +1797,8 @@ class JaxprTest(jtu.JaxTestCase):
     jaxpr = api.make_jaxpr(func11)(onp.ones(16), 5.)
     # TODO(#2640): update docs/jaxpr.rst to reflect new jaxpr
     self.assertMultiLineStrippedEqual("""
-{ lambda c ; a b.
-  let d e = scan[ forward=True
+{ lambda  ; a b.
+  let c d = scan[ forward=True
                   jaxpr={ lambda  ; f a b c.
                           let d = mul b c
                               e = add a d
@@ -1807,8 +1807,8 @@ class JaxprTest(jtu.JaxTestCase):
                   length=16
                   linear=(False, False, False, False)
                   num_carry=1
-                  num_consts=1 ] b 0.0 a c
-  in (d, e) }
+                  num_consts=1 ] b 0.0 a [1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]
+  in (c, d) }
                         """, str(jaxpr))
 
     def func12(arg):
@@ -1820,17 +1820,17 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(func12)(1.)
     self.assertMultiLineStrippedEqual("""
-{ lambda b ; a.
-  let c = sub a 2.0
-      d = xla_call[ backend=None
-                    call_jaxpr={ lambda  ; c b a.
-                                 let d = mul b c
-                                     e = add a d
-                                 in (e,) }
+{ lambda  ; a.
+  let b = sub a 2.0
+      c = xla_call[ backend=None
+                    call_jaxpr={ lambda  ; b a.
+                                 let c = mul b [1.]
+                                     d = add a c
+                                 in (d,) }
                     device=None
-                    name=inner ] b a c
-      e = add a d
-  in (e,) }
+                    name=inner ] a b
+      d = add a c
+  in (d,) }
                             """, str(jaxpr))
 
     def func13(arr, extra):
@@ -1842,21 +1842,21 @@ class JaxprTest(jtu.JaxTestCase):
 
     jaxpr = api.make_jaxpr(func13)(jnp.ones((1, 3)), 5.)
     self.assertMultiLineStrippedEqual("""
-{ lambda c ; a b.
-  let d = xla_pmap[ axis_name=rows
+{ lambda  ; a b.
+  let c = xla_pmap[ axis_name=rows
                     axis_size=1
                     backend=None
-                    call_jaxpr={ lambda  ; d b a.
+                    call_jaxpr={ lambda  ; b a.
                                  let c = add a b
-                                     e = add c d
-                                     f = psum[ axis_name=rows ] a
-                                     g = div e f
-                                 in (g,) }
+                                     d = add c [1.]
+                                     e = psum[ axis_name=rows ] a
+                                     f = div d e
+                                 in (f,) }
                     devices=None
                     global_axis_size=None
-                    mapped_invars=(True, False, True)
-                    name=inner ] c b a
-  in (d,) }
+                    mapped_invars=(False, True)
+                    name=inner ] b a
+  in (c,) }
                               """, str(jaxpr))
 
   def test_make_jaxpr_static_argnums(self):
@@ -1871,8 +1871,8 @@ class JaxprTest(jtu.JaxTestCase):
     x = jax.random.uniform(jax.random.PRNGKey(0), shape=(1000, 10))
     f = jax.pmap(lambda i: x[i])
     s = jax.xla_computation(f)(np.arange(num_devices)).GetHloText()
-    self.assertRegex(s, r'constant\.\d+ = f32\[1000,10\]')
-    self.assertNotRegex(s, r'constant\.\d+ = f32\[{num_devices},1000,10\]'
+    self.assertRegex(s, r'constant\.\d+ = f(32|64)\[1000,10\]')
+    self.assertNotRegex(s, r'constant\.\d+ = f(32|64)\[{num_devices},1000,10\]'
                         .format(num_devices=num_devices))
 
 

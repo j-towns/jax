@@ -351,8 +351,7 @@ class MaskTracer(Tracer):
 
   @property
   def dtype(self):
-    # TODO clean this up:
-    return self.val.dtype if hasattr(self.val, 'dtype') else type(self.val)
+    return self.val.dtype
 
   def is_pure(self):
     return all(type(poly) is not Poly or poly.is_constant

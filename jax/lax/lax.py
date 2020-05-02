@@ -37,7 +37,7 @@ from .. import lazy
 from .. import lib
 from ..ops import index_update
 from ..config import flags
-from ..core import Primitive, unit, Tracer, _canonicalize_dimension
+from ..core import Primitive, unit, Tracer, _canonicalize_dimension, Jaxpr
 from ..abstract_arrays import (UnshapedArray, ShapedArray, ConcreteArray,
                                AbstractToken, array_types, make_shaped_array,
                                raise_to_shaped, abstract_token, canonicalize_shape)
@@ -2804,16 +2804,22 @@ def _broadcast_in_dim_translation_rule(c, operand, shape, broadcast_dimensions):
     'broadcast_in_dim', c, operand, shape=shape,
     broadcast_dimensions=broadcast_dimensions)
 
+@curry
+def _broadcast_in_dim_process_primitive(prim, trace, *tracers, **params):
+  if masking.is_polymorphic(params['shape']):
+    return _jaxpr_process_primitive_without_lowering(prim)(trace, *tracers, **params)
+
+  return trace.default_process_primitive(prim, tracers, params)
+
 broadcast_in_dim_p = standard_primitive(
   _broadcast_in_dim_shape_rule, _input_dtype, 'broadcast_in_dim')
 broadcast_in_dim_p.def_impl(_broadcast_in_dim_impl)
 ad.deflinear(broadcast_in_dim_p, _broadcast_in_dim_transpose_rule)
 batching.primitive_batchers[broadcast_in_dim_p] = _broadcast_in_dim_batch_rule
 broadcast_in_dim_p.def_abstract_eval(_broadcast_abstract_eval)
-pe.custom_partial_eval_rules[broadcast_in_dim_p] = _jaxpr_process_primitive_without_lowering(broadcast_in_dim_p)
+pe.custom_partial_eval_rules[broadcast_in_dim_p] = _broadcast_in_dim_process_primitive(broadcast_in_dim_p)
 masking.masking_rules[broadcast_in_dim_p] = _broadcast_in_dim_masking_rule
 xla.translations[broadcast_in_dim_p] = _broadcast_in_dim_translation_rule
-
 
 def _clamp_shape_rule(min, operand, max):
   if min.shape and min.shape != operand.shape:

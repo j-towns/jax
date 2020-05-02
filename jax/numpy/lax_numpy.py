@@ -724,7 +724,7 @@ def _conv(x, y, mode, op, precision):
   if ndim(x) != 1 or ndim(y) != 1:
     raise ValueError(f"{op}() only support 1-dimensional inputs.")
   x, y = _promote_dtypes_inexact(x, y)
-  
+
   out_order = slice(None)
   if len(x) < len(y):
     x, y = y, x
@@ -758,7 +758,7 @@ def correlate(x, y, mode='valid', *, precision=None):
 
 
 def _normalize_float(x):
-    info = finfo(_dtype(x))
+    info = (_dtype(x))
     cond = lax.abs(x) < info.tiny
     x1 = where(cond, x * (1 << info.nmant), x)
     x2 = where(cond,

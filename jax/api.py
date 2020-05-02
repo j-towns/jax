@@ -1219,7 +1219,7 @@ def shapecheck(in_shapes, out_shape, fun: Callable):
   out_shapes_ = map(masking.parse_spec, out_shapes_)
   flat_fun, out_tree_thunk = flatten_fun_nokwargs(lu.wrap_init(fun), in_tree)
   avals = map(partial(ShapedArray, dtype=onp.float32), in_shapes)
-  out_shapes = [o.shape for o in pe.abstract_eval_fun(flat_fun.call_wrapped, *avals, trace_type=masking.PolymorphicJaxprTrace)]
+  out_shapes = [o.shape for o in pe.abstract_eval_fun(flat_fun.call_wrapped, *avals)]
   out_tree = out_tree_thunk()
   if out_tree_ != out_tree or not all(map(masking._shape_spec_consistent, out_shapes_, out_shapes)):
     out_shapes_ = tree_unflatten(out_tree_, map(tuple, out_shapes_))

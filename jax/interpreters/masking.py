@@ -407,23 +407,6 @@ class MaskTrace(Trace):
       return map(partial(MaskTracer, trace), x, polymorphic_shapes)
     return vals, todo
 
-class PolymorphicJaxprTrace(JaxprTrace):
-  pass
-
-polymorphic_trace_types: Set[Type] = {PolymorphicJaxprTrace, MaskTrace}
-
-def ensure_traced(operand):
-  if isinstance(operand, Tracer):
-    return operand
-
-  def has_poly_trace(master):
-    return issubclass(master.trace_type, tuple(polymorphic_trace_types))
-
-  masters = reversed(core.trace_state.trace_stack.upward)
-  master = next(filter(has_poly_trace, masters))
-  trace = master.trace_type(master, core.cur_sublevel())
-  return trace.pure(operand)
-
 class UniqueId:
   def __init__(self, name):
     self.name = name

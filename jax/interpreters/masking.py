@@ -76,17 +76,6 @@ def padded_shape_as_value(shape):
   assert is_tracing() or not is_polymorphic(shape)
   return eval_polymorphic_shape(shape, shape_envs.padded)
 
-def poly_as_value(dim):
-  assert is_tracing() or not type(dim) is Poly
-  return eval_poly(dim, shape_envs.logical)
-
-def padded_poly_as_value(dim):
-  assert is_tracing() or not not type(dim) is Poly
-  return eval_poly(dim, shape_envs.padded)
-
-def padded_shape_as_value_if_tracing(shape):
-  return padded_shape_as_value(shape) if is_tracing() else shape
-
 def mask_fun(fun, logical_env, padded_env, in_vals, polymorphic_shapes):
   with core.new_master(MaskTrace) as master:
     fun, out_shapes = mask_subtrace(fun, master, polymorphic_shapes)

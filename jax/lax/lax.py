@@ -2679,9 +2679,7 @@ def _broadcast_in_dim_shape_rule(operand, *, shape, broadcast_dimensions):
     msg = ('broadcast_in_dim broadcast_dimensions must be a subset of output '
            'dimensions, got {} for operand ndim {} and shape {}.')
     raise TypeError(msg.format(broadcast_dimensions, operand_ndim, shape))
-  o_shape = masking.padded_shape_as_value_if_tracing(onp.shape(operand))
-  if any(o_shape[i] != 1 and o_shape[i] !=
-         masking.padded_shape_as_value_if_tracing(shape)[broadcast_dimensions[i]]
+  if any(operand.shape[i] != 1 and operand.shape[i] != shape[broadcast_dimensions[i]]
          for i in range(operand_ndim)):
       msg = ('broadcast_in_dim operand dimension sizes must either be 1, or be '
              'equal to their corresponding dimensions in the target broadcast shape; '
@@ -2968,8 +2966,7 @@ def _reshape_shape_rule(operand, *, new_sizes, dimensions):
     msg = 'reshape new_sizes must all be positive, got {}.'
     raise TypeError(msg.format(new_sizes))
 
-  if (prod(masking.padded_shape_as_value_if_tracing(onp.shape(operand))) !=
-      prod(masking.padded_shape_as_value_if_tracing(new_sizes))):
+  if prod(onp.shape(operand)) != prod(new_sizes):
     msg = 'reshape total size must be unchanged, got new_sizes {} for shape {}.'
     raise TypeError(msg.format(new_sizes, onp.shape(operand)))
   if dimensions is not None:
@@ -3003,7 +3000,6 @@ def _reshape_batch_rule(batched_args, batch_dims, *, new_sizes, dimensions):
   if dimensions is not None:
     dimensions = (0,) + tuple(onp.add(1, dimensions))
   return reshape(operand, operand.shape[:1] + new_sizes, dimensions), 0
-
 
 reshape_p = standard_primitive(_reshape_shape_rule, _reshape_dtype_rule,
                                'reshape', _reshape_translation_rule)

@@ -2965,7 +2965,6 @@ def _reshape_shape_rule(operand, *, new_sizes, dimensions):
   if not onp.all(onp.greater_equal(new_sizes, 0)):
     msg = 'reshape new_sizes must all be positive, got {}.'
     raise TypeError(msg.format(new_sizes))
-
   if prod(onp.shape(operand)) != prod(new_sizes):
     msg = 'reshape total size must be unchanged, got new_sizes {} for shape {}.'
     raise TypeError(msg.format(new_sizes, onp.shape(operand)))

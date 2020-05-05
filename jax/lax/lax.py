@@ -3526,14 +3526,6 @@ def _gather_batching_rule(batched_args, batch_dims, *, dimension_numbers,
     return gather(operand, start_indices, dimension_numbers=dnums,
                   slice_sizes=slice_sizes), 0
 
-def _gather_masking_rule(padded_vals, logical_shapes,
-                         dimension_numbers, slice_sizes):
-  operand, start_indices = padded_vals
-
-  return gather(operand, start_indices,
-                dimension_numbers=dimension_numbers,
-                slice_sizes=masking.padded_shape_as_value(slice_sizes))
-
 gather_p = standard_primitive(
     _gather_shape_rule, _gather_dtype_rule, 'gather',
     _gather_translation_rule)
@@ -3541,7 +3533,6 @@ ad.defjvp(gather_p, _gather_jvp_rule, None)
 
 ad.primitive_transposes[gather_p] = _gather_transpose_rule
 batching.primitive_batchers[gather_p] = _gather_batching_rule
-masking.masking_rules[gather_p] = _gather_masking_rule
 
 
 def _scatter_dimensions_proto(indices_shape, dimension_numbers):

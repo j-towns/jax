@@ -175,9 +175,6 @@ def atan2(x: Array, y: Array) -> Array:
 
 def betainc(a: Array, b: Array, x: Array) -> Array:
   r"""Elementwise regularized incomplete beta integral."""
-  a = _brcast(_brcast(a, b), x)
-  b = _brcast(b, a)
-  x = _brcast(x, a)
   return regularized_incomplete_beta_p.bind(a, b, x)
 
 def lgamma(x: Array) -> Array:
@@ -190,11 +187,15 @@ def digamma(x: Array) -> Array:
 
 def igamma(a: Array, x: Array) -> Array:
   r"""Elementwise regularized incomplete gamma function."""
-  return igamma_p.bind(_brcast(a, x), _brcast(x, a))
+  return igamma_p.bind(a, x)
 
 def igammac(a: Array, x: Array) -> Array:
   r"""Elementwise complementary regularized incomplete gamma function."""
-  return igammac_p.bind(_brcast(a, x), _brcast(x, a))
+  return igammac_p.bind(a, x)
+
+def igamma_grad_a(a: Array, x: Array) -> Array:
+  r"""Elementwise derivative of the regularized incomplete gamma function."""
+  return igamma_grad_a_p.bind(a, x)
 
 def bessel_i0e(x: Array) -> Array:
   r"""Exponentially scaled modified Bessel function of order 0:
@@ -520,10 +521,7 @@ def conv_general_dilated(
   (for a 2D convolution).
   """
   dnums: ConvDimensionNumbers
-  if isinstance(dimension_numbers, ConvDimensionNumbers):
-    dnums = dimension_numbers
-  else:
-    dnums = conv_dimension_numbers(lhs.shape, rhs.shape, dimension_numbers)
+  dnums = conv_dimension_numbers(lhs.shape, rhs.shape, dimension_numbers)
   if lhs_dilation is None:
     lhs_dilation = (1,) * (lhs.ndim - 2)
   elif isinstance(padding, str) and not len(lhs_dilation) == lhs_dilation.count(1):
@@ -1783,6 +1781,26 @@ def naryop(result_dtype, accepted_dtypes, name, translation_rule=None):
 standard_naryop = partial(naryop, _input_dtype)
 
 
+def _broadcast_translate(translate: Callable):
+  # Decorator for translation rules which adds explicit broadcasting of
+  # positional arguments. This is necessary only for a handful of primitives
+  # whose XLA implementations do not support broadcasting.
+  def _broadcast_array(array, array_shape, result_shape):
+    if array_shape == result_shape:
+      return array
+    bcast_dims = tuple(range(len(result_shape) - len(array_shape),
+                             len(result_shape)))
+    result = xops.BroadcastInDim(array, result_shape, bcast_dims)
+    return result
+
+  def _broadcasted_translation_rule(c, *args, **kwargs):
+    shapes = [c.GetShape(arg).dimensions() for arg in args]
+    result_shape = broadcast_shapes(*shapes)
+    args = [_broadcast_array(arg, arg_shape, result_shape)
+            for arg, arg_shape in zip(args, shapes)]
+    return translate(c, *args, **kwargs)
+  return _broadcasted_translation_rule
+
 # NOTE(mattjj): this isn't great for orchestrate fwd mode because it means JVPs
 # get two extra ops in them: a reshape and a broadcast_in_dim (or sometimes just
 # a broadcast). but saving the shape info with the primitives isn't great either
@@ -1900,7 +1918,9 @@ ad.defjvp(atanh_p,
           lambda g, x: mul(g, reciprocal((_one(x) - x) * (_one(x) + x))))
 
 regularized_incomplete_beta_p = standard_naryop(
-    [_float, _float, _float], 'regularized_incomplete_beta')
+    [_float, _float, _float], 'regularized_incomplete_beta',
+    translation_rule=_broadcast_translate(
+      partial(standard_translate, 'regularized_incomplete_beta')))
 
 def betainc_gradx(g, a, b, x):
   lbeta = lgamma(a) + lgamma(b) - lgamma(a + b)
@@ -1921,26 +1941,32 @@ ad.defjvp(lgamma_p, lambda g, x: mul(g, digamma(x)))
 
 digamma_p = standard_unop(_float, 'digamma')
 
-igamma_p = standard_naryop([_float, _float], 'igamma')
+igamma_p = standard_naryop(
+  [_float, _float], 'igamma',
+  translation_rule=_broadcast_translate(partial(standard_translate, 'igamma')))
+igamma_grad_a_p = standard_naryop([_float, _float], 'igamma_grad_a',
+  translation_rule=_broadcast_translate(partial(standard_translate,
+                                               'igamma_grad_a')))
 
 def igamma_gradx(g, a, x):
-  return g * exp(-x + (a - 1.) * log(x) - lgamma(a))
+  return _brcast(g, a, x) * exp(-x + (a - _ones(a)) * log(x) - lgamma(a))
 
-# TODO(srvasude): Igamma and Igammac gradient aren't supported with respect to
-# a. We can reuse some of the reparameterization code in the JAX gamma sampler,
-# but better to add an XLA op for this (which will also allow TF Igamma gradient
-# code to be XLA compiled).
-def gamma_grad_not_implemented(a, b, x):
-  raise ValueError("Igamma(c) gradient with respect to `a` not supported.")
+def igamma_grada(g, a, x):
+  return _brcast(g, a, x) * igamma_grad_a(a, x)
 
-ad.defjvp(igamma_p, gamma_grad_not_implemented, igamma_gradx)
+ad.defjvp(igamma_p, igamma_grada, igamma_gradx)
 
-igammac_p = standard_naryop([_float, _float], 'igammac')
+igammac_p = standard_naryop(
+  [_float, _float], 'igammac',
+  translation_rule=_broadcast_translate(partial(standard_translate, 'igammac')))
 
 def igammac_gradx(g, a, x):
   return -igamma_gradx(g, a, x)
 
-ad.defjvp(igammac_p, gamma_grad_not_implemented, igammac_gradx)
+def igammac_grada(g, a, x):
+  return -igamma_grada(g, a, x)
+
+ad.defjvp(igammac_p, igammac_grada, igammac_gradx)
 
 bessel_i0e_p = standard_unop(_float, 'bessel_i0e')
 ad.defjvp2(bessel_i0e_p, lambda g, y, x: g * (bessel_i1e(x) - sign(x) * y))
@@ -5125,13 +5151,16 @@ def conv_dimension_numbers(lhs_shape, rhs_shape, dimension_numbers):
   Args:
     lhs_shape: tuple of nonnegative integers, shape of the convolution input.
     rhs_shape: tuple of nonnegative integers, shape of the convolution kernel.
-    dimension_numbers: None or a tuple/list of strings, following the
-      convolution dimension number specification format in xla_client.py.
+    dimension_numbers: None or a tuple/list of strings or a ConvDimensionNumbers
+      object following the convolution dimension number specification format in
+      xla_client.py.
 
   Returns:
     A `ConvDimensionNumbers` object that represents `dimension_numbers` in the
     canonical form used by lax functions.
   """
+  if isinstance(dimension_numbers, ConvDimensionNumbers):
+    return dimension_numbers
   if len(lhs_shape) != len(rhs_shape):
     msg = "convolution requires lhs and rhs ndim to be equal, got {} and {}."
     raise TypeError(msg.format(len(lhs_shape), len(rhs_shape)))

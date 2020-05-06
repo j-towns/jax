@@ -9,15 +9,22 @@ Change Log
 
 These are the release notes for JAX.
 
-jax 0.1.66 (unreleased)
+jax 0.1.67 (unreleased)
 ---------------------------
 
-* `GitHub commits <https://github.com/google/jax/compare/jax-v0.1.65...master>`_.
+* `GitHub commits <https://github.com/google/jax/compare/jax-v0.1.66...master>`_.
 
-jaxlib 0.1.46 (unreleased)
+jax 0.1.66 (May 5, 2020)
+---------------------------
+
+* `GitHub commits <https://github.com/google/jax/compare/jax-v0.1.65...jax-v0.1.66>`_.
+
+jaxlib 0.1.46 (May 5, 2020)
 ------------------------------
 
 * Fixes crash for linear algebra functions on Mac OS X (#432).
+* Fixes an illegal instruction crash caused by using AVX512 instructions when
+  an operating system or hypervisor disabled them (#2906).
 
 jax 0.1.65 (April 30, 2020)
 ---------------------------

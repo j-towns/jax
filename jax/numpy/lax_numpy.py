@@ -48,7 +48,8 @@ from ..interpreters.xla import DeviceArray
 from ..interpreters.masking import Poly
 from .. import lax
 from .. import ops
-from ..util import partial, get_module_functions, unzip2, prod as _prod, subvals
+from ..util import (partial, get_module_functions, unzip2, prod as _prod,
+                    subvals, safe_zip)
 from ..lib import pytree
 from ..lib import xla_client
 
@@ -390,7 +391,7 @@ def fmax(x1, x2):
   return where((x1 > x2) | isnan(x2), x1, x2)
 
 @_wraps(onp.finfo)
-def finfo(dtype): 
+def finfo(dtype):
   return dtypes.finfo(dtype)
 
 @_wraps(onp.issubdtype)
@@ -724,7 +725,7 @@ def _conv(x, y, mode, op, precision):
   if ndim(x) != 1 or ndim(y) != 1:
     raise ValueError(f"{op}() only support 1-dimensional inputs.")
   x, y = _promote_dtypes_inexact(x, y)
-  
+
   out_order = slice(None)
   if len(x) < len(y):
     x, y = y, x
@@ -1021,6 +1022,22 @@ def diff(a, n=1, axis=-1,):
 
   return a
 
+_EDIFF1D_DOC = """\
+Unlike NumPy's implementation of ediff1d, :py:func:`jax.numpy.ediff1d` will not
+issue an error if casting ``to_end`` or ``to_begin`` to the type of ``ary``
+loses precision.
+"""
+
+@_wraps(onp.ediff1d, lax_description=_EDIFF1D_DOC)
+def ediff1d(ary, to_end=None, to_begin=None):
+  ary = ravel(asarray(ary))
+  result = lax.sub(ary[1:], ary[:-1])
+  if to_begin is not None:
+    result = concatenate((ravel(asarray(to_begin, dtype=ary.dtype)), result))
+  if to_end is not None:
+    result = concatenate((result, ravel(asarray(to_end, dtype=ary.dtype))))
+  return result
+
 
 @partial(jit, static_argnums=(1, 2))
 def _gradient(a, varargs, axis):
@@ -1044,7 +1061,7 @@ def _gradient(a, varargs, axis):
       return []
     axis = [_canonicalize_axis(i, a.ndim) for i in axis]
 
-  if min([s for i, s in enumerate(a.shape) if i in axis]) < 2:
+  if _min([s for i, s in enumerate(a.shape) if i in axis]) < 2:
     raise ValueError("Shape of array too small to calculate "
                      "a numerical gradient, "
                      "at least 2 elements are required.")
@@ -1603,6 +1620,14 @@ def var(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
 
   a_dtype = _dtype(a)
   if dtype:
+    if (not issubdtype(dtype, complexfloating) and
+        issubdtype(a_dtype, complexfloating)):
+      msg = ("jax.numpy.var does not yet support real dtype parameters when "
+             "computing the variance of an array of complex values. The "
+             "semantics of numpy.var seem unclear in this case. Please comment "
+             "on https://github.com/google/jax/issues/2283 if this behavior is "
+             "important to you.")
+      raise ValueError(msg)
     a_dtype = promote_types(a_dtype, dtype)
   else:
     if not issubdtype(a_dtype, inexact):
@@ -1852,7 +1877,7 @@ def _pad(array, pad_width, mode, constant_values):
   array = asarray(array)
   nd = ndim(array)
   pad_width = onp.broadcast_to(onp.asarray(pad_width), (nd, 2))
-  if any(pad_width < 0):
+  if onp.any(pad_width < 0):
     raise ValueError("index can't contain negative values")
 
   if mode == "constant":
@@ -2313,52 +2338,41 @@ def _repeat_scalar(a, repeats, axis=None):
 
 @_wraps(onp.repeat)
 def repeat(a, repeats, axis=None):
-  '''
-  :param repeats: int or array of ints
-  '''
   # use `_repeat_scalar` when possible
   if isscalar(repeats):
     return _repeat_scalar(a, repeats, axis)
-  repeats_raveled = ravel(array(repeats)) # make sure it's jax's array type
+  repeats_raveled = onp.ravel(onp.array(repeats))
   if size(repeats_raveled) == 1:
-    return _repeat_scalar(a, list(repeats_raveled)[0], axis)
+    return _repeat_scalar(a, repeats_raveled.item(), axis)
 
   if axis is None or isscalar(a):
     a = ravel(a)
     axis = 0
 
   # repeats must match the dimension along the requested axis
-  a_shape = list(a.shape)
-  n = a_shape[axis]
-  if size(repeats_raveled) != n:
-    raise ValueError("repeats shape {} does not match the dimension on axis {}".format(
-      repeats_raveled.shape, n
-    ))
+  if repeats_raveled.size != a.shape[axis]:
+    raise ValueError(f"repeats shape {repeats_raveled.shape} does not match "
+                     f"the dimension on axis {a.shape[axis]}")
 
   # calculating the new shape
-  total = sum(repeats_raveled)
+  total = repeats_raveled.sum()
 
-  new_shape = a_shape[:]
+  new_shape = list(a.shape)
   new_shape[axis] = total
-
   a_flattened = ravel(a)
 
-  '''
-  main algorithm:
-  first break down raveled input array into list of chunks; each chunk is the unit of repeat
-  then tile the repeats to have same length as the list of chunks
-  finally repeat each unit x number of times according to the tiled repeat list
-  '''
-  chunks = product(a_shape[:axis+1]).item()
+  # first break down raveled input array into list of chunks; each chunk is the
+  # unit of repeat. then tile the repeats to have same length as the list of
+  # chunks. finally repeat each unit x number of times according to the tiled
+  # repeat list.
+  chunks = _prod(a.shape[:axis+1])
   a_splitted = split(a_flattened, chunks)
-  repeats_tiled = tile(repeats_raveled, chunks // len(repeats_raveled))
+  repeats_tiled = onp.tile(repeats_raveled, chunks // len(repeats_raveled))
 
   ret = array([], dtype=a.dtype)
   for i, repeat in enumerate(repeats_tiled):
-    if not isinstance(repeat, int):
-      repeat = repeat.item()
     if repeat != 0:
-      ret = concatenate((ret, tile(a_splitted[i], repeat)))
+      ret = concatenate((ret, tile(a_splitted[i], (repeat,))))
 
   return reshape(ret, new_shape)
 
@@ -3954,12 +3968,24 @@ setattr(DeviceArray, "broadcast", lax.broadcast)
 setattr(DeviceArray, "broadcast_in_dim", lax.broadcast_in_dim)
 setattr(DeviceArray, "split", split)
 
-@jit
-def _unstack(x):
-  if x.ndim == 0:
-    raise ValueError("Argument to _unstack must be non-scalar")
-  return [lax.index_in_dim(x, i, keepdims=False) for i in range(x.shape[0])]
-setattr(DeviceArray, "_unstack", _unstack)
+@partial(jit, static_argnums=(1,2,3))
+def _multi_slice(arr: DeviceArray,
+                 start_indices: Tuple[Tuple[int, ...]],
+                 limit_indices: Tuple[Tuple[int, ...]],
+                 removed_dims: Tuple[Tuple[int, ...]]):
+  """Extracts multiple slices from `arr`.
+
+  This is used to shard DeviceArray arguments to pmap. It's implemented as a
+  DeviceArray method here to avoid circular imports.
+  """
+  results = []
+  for starts, limits, removed in safe_zip(start_indices, limit_indices, removed_dims):
+    sliced = lax.slice(arr, starts, limits)
+    if removed_dims:
+      sliced = sliced.reshape(onp.delete(arr.shape, removed_dims))
+    results.append(sliced)
+  return results
+setattr(DeviceArray, "_multi_slice", _multi_slice)
 
 
 # Syntactic sugar for scatter operations.

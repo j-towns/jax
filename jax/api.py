@@ -908,6 +908,10 @@ def pmap(fun: Callable, axis_name: Optional[AxisName] = None, *, in_axes=0,
   >>> out = pmap(lambda x: x ** 2)(np.arange(8))
   >>> print(out)
   [0, 1, 4, 9, 16, 25, 36, 49]
+
+  When the leading dimension is smaller than the number of available devices JAX
+  will simply run on a subset of devices:
+
   >>> x = np.arange(3 * 2 * 2.).reshape((3, 2, 2))
   >>> y = np.arange(3 * 2 * 2.).reshape((3, 2, 2)) ** 2
   >>> out = pmap(np.dot)(x, y)
@@ -918,6 +922,12 @@ def pmap(fun: Callable, axis_name: Optional[AxisName] = None, *, in_axes=0,
     [  348.   493.]]
    [[ 1412.  1737.]
     [ 1740.  2141.]]]
+
+  If your leading dimension is larger than the number of available devices you
+  will get an error:
+
+  >>> pmap(lambda x: x ** 2)(np.arange(9))
+  ValueError: ... requires 9 replicas, but only 8 XLA devices are available
 
   As with ``vmap``, using ``None`` in ``in_axes`` indicates that an argument
   doesn't have an extra axis and should be broadcasted, rather than mapped,
@@ -1523,16 +1533,22 @@ def make_jaxpr(fun: Callable,
   return jaxpr_maker
 
 
-def device_put(x, device=None):
+def device_put(x, device: Optional[xc.Device] = None):
   """Transfers ``x`` to ``device``.
 
   Args:
     ``x``: An array, scalar, or (nested) standard Python container thereof.
-    ``device``: The ``Device`` to transfer ``x`` to.
+    ``device``: The (optional) ``Device`` to transfer ``x`` to.
+      If given, then the result is committed to the device.
+
+  If the ``device`` parameter is ``None``, then this operation behaves like the
+  identity function if the operand is on any device already, otherwise it
+  transfers the data to the default device, uncommitted.
+
+  For more details on data placement see the https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices.
 
   Returns:
-    A copy of ``x`` that resides on ``device``. If ``x`` is already on
-    ``device``, returns ``x``.
+    A copy of ``x`` that resides on ``device``.
   """
   return tree_map(lambda y: xla.device_put_p.bind(y, device=device), x)
 

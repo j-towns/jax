@@ -324,6 +324,10 @@ class MaskingTest(jtu.JaxTestCase):
     expected = np.array([3, 5])
     self.assertAllClose(ans, expected, check_dtypes=False)
 
+    @shapecheck(['(2*n, n)'], '_, n')
+    def identity(x):
+      return x
+
   def test_rnn(self):
     n = 3
 

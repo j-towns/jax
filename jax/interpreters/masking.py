@@ -18,17 +18,17 @@ from functools import partial
 from itertools import chain, product
 import operator as op
 import string
-from typing import Callable, Dict, Set, Type, Sequence, Union, Any
+from typing import Callable, Dict, Sequence, Union
 
 import numpy as onp
 
 from .. import abstract_arrays
 from .. import core
+from ..tree_util import tree_unflatten
 from ..core import Trace, Tracer
 from ..util import safe_map, safe_zip, unzip2, prod
 from ..abstract_arrays import ShapedArray
 from .. import linear_util as lu
-from .partial_eval import JaxprTrace
 
 map = safe_map
 zip = safe_zip
@@ -436,3 +436,9 @@ def bind_shapes(polymorphic_shapes, padded_shapes):
         assert r == 0
         if env.setdefault(id, d) != d: raise ShapeError
   return env
+
+def check_shapes(specs, spec_tree, shapes, tree, message_prefix="Output"):
+  if spec_tree != tree or not all(map(_shape_spec_consistent, specs, shapes)):
+    specs = tree_unflatten(spec_tree, specs)
+    shapes = tree_unflatten(tree, shapes)
+    raise ShapeError(f"{message_prefix} shapes should be {specs} but are {shapes}.")

@@ -2433,16 +2433,20 @@ def _conv_general_dilated_batch_rule(
       out = _reshape_axis_into(out_spec[1], out_spec[1] + 1, out)
       return out, out_spec[1]
 
-def _masked(x, logical_shape, dimensions, value=0):
+def _masked(padded_value, logical_shape, dimensions, value=0):
+  """
+  Sets all padding to the given value (default is 0) in the given dimensions.
+  All values outside the logical shape are considered padding.
+  """
   if len(dimensions) == 0:
-    return x
+    return padded_value
 
-  masks = [broadcasted_iota(onp.int32, x.shape, d) < logical_shape[d]
+  masks = [broadcasted_iota(onp.int32, padded_value.shape, d) < logical_shape[d]
            for d in dimensions]
   mask_intersection = masks[0]
   for mask in masks[1:]:
     mask_intersection &= mask
-  return select(mask_intersection, x, full_like(x, value))
+  return select(mask_intersection, padded_value, full_like(padded_value, value))
 
 def _conv_general_dilated_masking_rule(
         padded_vals, logical_shapes, window_strides, padding, lhs_dilation,
@@ -2450,6 +2454,9 @@ def _conv_general_dilated_masking_rule(
         lhs_shape, rhs_shape, precision):
   lhs, rhs = padded_vals
   logical_lhs_shape, rhs_shape = logical_shapes
+  assert (masking.padded_shape_as_value(rhs_shape) ==
+          masking.shape_as_value(rhs_shape))
+
   n, c, *padded_dimensions = dimension_numbers.lhs_spec
 
   return conv_general_dilated(

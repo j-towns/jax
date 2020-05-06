@@ -178,7 +178,8 @@ class MaskingTest(jtu.JaxTestCase):
           inputs[index] = value
 
       pad_widths = map(sub, map(partial(onp.array, dtype=onp.int64), padded_input_shapes), concrete_input_shapes)
-      padded_inputs = [np.pad(input, tuple((0, w) for w in widths), constant_values=-1) if input.ndim > 0 else input
+      padded_inputs = [np.pad(input, tuple((0, w) for w in widths), constant_values=-1)
+                       if input.ndim > 0 else input
                        for input, widths in zip(inputs, pad_widths)]
 
       outs_ = fun(*inputs)
@@ -209,16 +210,20 @@ class MaskingTest(jtu.JaxTestCase):
       for maybe_jit in [jit, lambda fun: fun]:
         v_masked_fun = maybe_jit(vmap(masked_fun))
         input_count = len(padded_inputs_list[0])
-        padded_v_inputs = [onp.array([padded_inputs[i] for padded_inputs in padded_inputs_list]) for i in range(input_count)]
+        padded_v_inputs = [onp.array(
+          [padded_inputs[i] for padded_inputs in padded_inputs_list])
+          for i in range(input_count)]
         padded_v_outs = v_masked_fun(padded_v_inputs, values_dict)
-        padded_outs_list = [tree_map(lambda x: x[i], padded_v_outs) for i in range(batch_size)]
+        padded_outs_list = [tree_map(lambda x: x[i], padded_v_outs)
+                            for i in range(batch_size)]
         for outs_, padded_outs in zip(expected_outs_list, padded_outs_list):
           check_outputs(outs_, padded_outs)
 
     outs_, padded_inputs = expected_outs_and_padded_ins[0]
     if is_vectorized:
       values, tree = tree_flatten(values_dict)
-      values_dict = tree_unflatten(tree, [x[0] for x in onp.broadcast_arrays(*values)])
+      values_dict = tree_unflatten(
+        tree, [x[0] for x in onp.broadcast_arrays(*values)])
     for maybe_jit in [jit, lambda fun: fun]:
       padded_outs = maybe_jit(masked_fun)(padded_inputs, values_dict)
       check_outputs(outs_, padded_outs)
@@ -289,8 +294,8 @@ class MaskingTest(jtu.JaxTestCase):
     self.assertAllClose(ans, expected, check_dtypes=False)
 
   def test_mean(self):
-    self.check(lambda x: np.sum(x) / shape_as_value(x.shape)[0], ['n'], dict(n=np.array([2, 3])), '',
-               skip_shapecheck=True)
+    self.check(lambda x: np.sum(x) / shape_as_value(x.shape)[0], ['n'],
+               dict(n=np.array([2, 3])), '', skip_shapecheck=True)
 
   def test_monomorphic(self):
     @partial(mask, in_shapes=['(_, n)'], out_shape='')
@@ -407,9 +412,10 @@ class MaskingTest(jtu.JaxTestCase):
                ['n', 'm', 'n'], dict(n=np.array((1, 2)), m=np.array((2, 3))), 'm + 2 * n')
 
   def test_dot(self):
-    self.check(lambda x, y: lax.dot(x, y),
-               ['(m, k)', '(k, n)'], dict(m=np.array([2, 3]), k=np.array([2, 3]), n=np.array([2, 3])), '(m, n)')
-    self.check(lambda A, b: np.dot(A, b), ['(m, n)', 'n'], dict(m=np.array([2, 3]), n=np.array([2, 3])), 'm')
+    self.check(lambda x, y: lax.dot(x, y), ['(m, k)', '(k, n)'],
+               dict(m=np.array([2, 3]), k=np.array([2, 3]), n=np.array([2, 3])), '(m, n)')
+    self.check(lambda A, b: np.dot(A, b), ['(m, n)', 'n'],
+               dict(m=np.array([2, 3]), n=np.array([2, 3])), 'm')
 
     def thunk():
       self.check(lambda A, b: lax.dot_general(A, b, [((0,), (0,)), ((), ())]),
@@ -505,7 +511,9 @@ class MaskingTest(jtu.JaxTestCase):
         lhs, rhs, strides, padding,
         lhs_dilation=lhs_dilation, dimension_numbers=dimension_numbers)
 
-    self.check(conv, [lhs_shape, rhs_shape], dict(n=np.array([1, 1]), i=np.array([3, 3]), o=np.array([2, 2]), h=np.array([1, 2]), w=np.array([2, 3])),
+    self.check(conv, [lhs_shape, rhs_shape],
+               dict(n=np.array([1, 1]), i=np.array([3, 3]), o=np.array([2, 2]),
+                    h=np.array([1, 2]), w=np.array([2, 3])),
                out_shape, unpadded_vars=['n', 'i', 'o'])
 
   def test_indexing(self):
@@ -535,7 +543,8 @@ class MaskingTest(jtu.JaxTestCase):
     # self.check(lambda x: x[-2::-1], ['n'], dict(n=np.array([2, 3])), 'n+-1')
 
   def test_lax_slice(self):
-    self.check(lambda x: lax.slice(x, (1,), (x.shape[0],)), ['n'], dict(n=np.array([2, 3])), 'n+-1')
+    self.check(lambda x: lax.slice(x, (1,), (x.shape[0],)), ['n'],
+               dict(n=np.array([2, 3])), 'n+-1')
     # TODO: self.check(lambda x: lax.slice(x, (x.shape[0] // 2,), (x.shape[0],)), ['2*n'], dict(n=np.array([2, 3])), 'n')
 
   def test_reshape(self):
@@ -562,22 +571,27 @@ class MaskingTest(jtu.JaxTestCase):
 
   def test_arange(self):
     raise SkipTest
-    self.check(lambda x: -np.arange(x.shape[0]), ['n'], dict(n=np.array([2, 3])), 'n')
+    self.check(lambda x: -np.arange(x.shape[0]), ['n'],
+               dict(n=np.array([2, 3])), 'n')
 
   def test_eye(self):
     raise SkipTest
-    self.check(lambda x: -np.eye(x.shape[0], 2 * x.shape[0]), ['n'], dict(n=np.array([2, 3])), 'n, 2*n')
+    self.check(lambda x: -np.eye(x.shape[0], 2 * x.shape[0]), ['n'],
+               dict(n=np.array([2, 3])), 'n, 2*n')
 
   def test_tri(self):
     raise SkipTest
-    self.check(lambda x: -np.tri(x.shape[0], 2 * x.shape[0]), ['n'], dict(n=np.array([2, 3])), 'n, 2*n')
+    self.check(lambda x: -np.tri(x.shape[0], 2 * x.shape[0]), ['n'],
+               dict(n=np.array([2, 3])), 'n, 2*n')
 
   def test_delta(self):
     raise SkipTest
-    self.check(lambda x: -lax._delta(np.float32, (x.shape[0], 2 * x.shape[0], 3 * x.shape[0]), axes=(0, 1)), ['n'], dict(n=np.array([2, 3])), 'n, 2*n, 3*n')
+    self.check(lambda x: -lax._delta(np.float32, (x.shape[0], 2 * x.shape[0], 3 * x.shape[0]), axes=(0, 1)), ['n'],
+               dict(n=np.array([2, 3])), 'n, 2*n, 3*n')
 
   def test_sum_2d(self):
-    self.check(lambda x: np.sum(x), ['(m, n)'], dict(m=np.array([2, 3]), n=np.array([2, 3])), '')
+    self.check(lambda x: np.sum(x), ['(m, n)'],
+               dict(m=np.array([2, 3]), n=np.array([2, 3])), '')
 
   def test_expit(self):
     raise SkipTest("custom_jvp doesn't work with masking yet")
@@ -614,15 +628,18 @@ class MaskingTest(jtu.JaxTestCase):
 
   def test_zeros(self):
     raise SkipTest
-    self.check(lambda x: -np.zeros(x.shape), ['n'], dict(n=np.array([2, 3])), 'n')
+    self.check(lambda x: -np.zeros(x.shape), ['n'],
+               dict(n=np.array([2, 3])), 'n')
 
   def test_ones(self):
     raise SkipTest
-    self.check(lambda x: -np.ones(x.shape), ['n'], dict(n=np.array([2, 3])), 'n')
+    self.check(lambda x: -np.ones(x.shape), ['n'],
+               dict(n=np.array([2, 3])), 'n')
 
   def test_broadcast_to(self):
     raise SkipTest
-    self.check(lambda x: -np.broadcast_to(0, x.shape), ['n'], dict(n=np.array([2, 3])), 'n')
+    self.check(lambda x: -np.broadcast_to(0, x.shape), ['n'],
+               dict(n=np.array([2, 3])), 'n')
 
   def test_broadcast_in_dim(self):
     raise SkipTest
@@ -638,7 +655,8 @@ class MaskingTest(jtu.JaxTestCase):
 
   def test_where(self):
     raise SkipTest
-    self.check(lambda x: np.where(x < 0, x, np.zeros_like(x)), ['n'], dict(n=np.array([2, 3])), 'n')
+    self.check(lambda x: np.where(x < 0, x, np.zeros_like(x)), ['n'],
+               dict(n=np.array([2, 3])), 'n')
 
     message = (
       "mask(jit(broadcast_in_dim))) is not supported yet. "
@@ -655,14 +673,17 @@ class MaskingTest(jtu.JaxTestCase):
 
   def test_split(self):
     raise SkipTest
-    self.check(lambda x: np.split(x, 2), ['2*n'], dict(n=np.array([4, 4])), ['n', 'n'], unpadded_vars=['n'])
-    self.check(lambda x: np.split(x, [10]), ['n'], dict(n=np.array([12, 12])), ['10', 'n+-10'], unpadded_vars=['n'])
+    self.check(lambda x: np.split(x, 2), ['2*n'],
+               dict(n=np.array([4, 4])), ['n', 'n'], unpadded_vars=['n'])
+    self.check(lambda x: np.split(x, [10]), ['n'],
+               dict(n=np.array([12, 12])), ['10', 'n+-10'], unpadded_vars=['n'])
 
   @parameterized.named_parameters(jtu.cases_from_list([{
     'testcase_name': "operator={}".format(operator.__name__), 'operator': operator}
     for operator in [np.sum, np.prod, np.max, np.min]]))
   def test_reduce(self, operator):
-    self.check(operator, ['(m, n)'], dict(m=np.array([3, 3]), n=np.array([3, 3])), '', unpadded_vars=['m', 'n'])
+    self.check(operator, ['(m, n)'],
+               dict(m=np.array([3, 3]), n=np.array([3, 3])), '', unpadded_vars=['m', 'n'])
 
   def test_output_shape_error(self):
     def thunk(skip_shapecheck=False):

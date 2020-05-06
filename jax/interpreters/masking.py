@@ -18,7 +18,7 @@ from functools import partial
 from itertools import chain, product
 import operator as op
 import string
-from typing import Callable, Dict, Set, Type, Sequence, Union
+from typing import Callable, Dict, Set, Type, Sequence, Union, Any
 
 import numpy as onp
 
@@ -91,7 +91,8 @@ def mask_subtrace(master, polymorphic_shapes, *in_vals):
                 for x, s in zip(in_vals, polymorphic_shapes)]
   outs = yield in_tracers, {}
   out_tracers = map(trace.full_raise, outs)
-  out_vals, out_shapes = unzip2((t.val, t.polymorphic_shape) for t in out_tracers)
+  out_vals, out_shapes = unzip2((t.val, t.polymorphic_shape)
+                                for t in out_tracers)
   yield out_vals, out_shapes
 
 def eval_polymorphic_shape(shape, values_dict):
@@ -114,7 +115,8 @@ class Poly(dict):
 
   def __init__(self, coeffs):
     # Makes sure Polynomials are always in canonical form
-    coeffs = {mon: op.index(coeff) for mon, coeff in coeffs.items() if coeff != 0}
+    coeffs = {mon: op.index(coeff)
+              for mon, coeff in coeffs.items() if coeff != 0}
     coeffs = coeffs or {Mon(): 0}
     super().__init__(coeffs)
 
@@ -229,7 +231,7 @@ abstract_arrays._DIMENSION_TYPES.add(Poly)
 
 class Mon(dict):
   def __hash__(self):
-    return hash(tuple(sorted(self.items())))
+    return hash(frozenset(self.items()))
 
   def __str__(self):
     return ' '.join('{}**{}'.format(k, v) if v != 1 else str(k)
@@ -418,16 +420,18 @@ def remap_ids(names, shape_spec):
                    if poly is not _monomorphic_dim else
                    _monomorphic_dim for poly in shape_spec)
 
-def bind_shapes(polymorphic_shapes, shapes):
+def bind_shapes(polymorphic_shapes, padded_shapes):
   env = {}
-  for polymorphic_shape, shape in zip(polymorphic_shapes, shapes):
-    for poly, d in zip(polymorphic_shape, shape):
+  for polymorphic_shape, padded_shape in zip(polymorphic_shapes, padded_shapes):
+    for poly, d in zip(polymorphic_shape, padded_shape):
       if type(poly) is not Poly or poly.is_constant:
         if int(poly) != d: raise ShapeError
       else:
         poly = poly.copy()
         const_coeff = poly.pop(Mon({}), 0)
-        ((id,), linear_coeff), = poly.items()
+        (mon, linear_coeff), = poly.items()
+        (id, index), = mon.items()
+        if index != 1: raise ShapeError
         d, r = divmod(d - const_coeff, linear_coeff)
         assert r == 0
         if env.setdefault(id, d) != d: raise ShapeError

@@ -1197,16 +1197,20 @@ def mask(fun: Callable, in_shapes, out_shape=None) -> Callable:
     if out_shape:
       out_shapes_ = map(masking.finalize_spec, out_specs, map(onp.shape, outs))
       padded_out_shapes = map(onp.shape, outs)
-      padded_out_shapes_ = map(partial(masking.eval_polymorphic_shape, values_dict=padded_env), out_shapes_)
+      padded_out_shapes_ = map(partial(masking.eval_polymorphic_shape,
+                                       values_dict=padded_env), out_shapes_)
 
       if out_tree != out_tree_ or not out_shapes_ == out_shapes:
         out_shapes_ = tree_unflatten(out_tree_, out_shapes_)
         out_shapes = tree_unflatten(out_tree, out_shapes)
-        raise masking.ShapeError("Output shapes should be {} but are {}.".format(out_shapes_, out_shapes))
-      if not all(shape_ == shape for shape_, shape in zip(padded_out_shapes_, padded_out_shapes)):
+        raise masking.ShapeError("Output shapes should be {} but are {}."
+                                 .format(out_shapes_, out_shapes))
+      if not all(shape_ == shape for shape_, shape
+                 in zip(padded_out_shapes_, padded_out_shapes)):
         padded_out_shapes_ = tree_unflatten(out_tree_, padded_out_shapes_)
         padded_out_shapes = tree_unflatten(out_tree, padded_out_shapes)
-        raise masking.ShapeError("Padded output shapes should be {} but are {}.".format(padded_out_shapes_, padded_out_shapes))
+        raise masking.ShapeError("Padded output shapes should be {} but are {}."
+                                 .format(padded_out_shapes_, padded_out_shapes))
     return tree_unflatten(out_tree, outs)
   return wrapped_fun
 
@@ -1221,10 +1225,12 @@ def shapecheck(in_shapes, out_shape, fun: Callable):
   avals = map(partial(ShapedArray, dtype=onp.float32), in_shapes)
   out_shapes = [o.shape for o in pe.abstract_eval_fun(flat_fun.call_wrapped, *avals)]
   out_tree = out_tree_thunk()
-  if out_tree_ != out_tree or not all(map(masking._shape_spec_consistent, out_shapes_, out_shapes)):
+  if (out_tree_ != out_tree or
+      not all(map(masking._shape_spec_consistent, out_shapes_, out_shapes))):
     out_shapes_ = tree_unflatten(out_tree_, map(tuple, out_shapes_))
     out_shapes = tree_unflatten(out_tree, map(tuple, out_shapes))
-    raise masking.ShapeError("Output shapes should be {} but are {}.".format(out_shapes_, out_shapes))
+    raise masking.ShapeError("Output shapes should be {} but are {}."
+                             .format(out_shapes_, out_shapes))
   return fun
 
 def jvp(fun: Callable, primals, tangents) -> Tuple[Any, Any]:

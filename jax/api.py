@@ -1945,9 +1945,9 @@ def linear_transpose(fun: Callable, *primals) -> Callable:
   flat_fun, out_tree = flatten_fun_nokwargs(lu.wrap_init(fun), in_tree)
   in_avals = map(shaped_abstractify, primals_flat)
   in_dtypes = map(dtypes.dtype, in_avals)
-  if any(not np.issubdtype(dtype, np.inexact) for dtype in in_dtypes):
-    raise TypeError("linear_transpose only supports float and complex inputs, "
-                    f"but got {in_dtypes}")
+  # if any(not np.issubdtype(dtype, np.inexact) for dtype in in_dtypes):
+  #   raise TypeError("linear_transpose only supports float and complex inputs, "
+  #                   f"but got {in_dtypes}")
 
   in_pvals = map(pe.PartialVal.unknown, in_avals)
   jaxpr, out_pvals, consts = pe.trace_to_jaxpr(flat_fun, in_pvals,
